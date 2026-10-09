@@ -24,6 +24,7 @@ change what is accepted. A compromised host is outside this tool's protection.
    applies narrow byte-pattern secret indicators.
 4. It optionally compares completed regular-file hashes against an external
    expected-hash manifest, then emits a report for the operator to interpret.
+   Only a complete pass publishes member hashes and a whole-archive digest.
 
 There is no extraction, installation, execution, repair, nested application
 launch, or network lookup. The tool does not trust an archive-embedded policy
@@ -46,7 +47,16 @@ The checker rejects names or member types its safety checks regard as unsafe,
 including traversal-like paths and link-like entries. Unsupported, encrypted,
 or corrupt input cannot produce a passing result. These checks do not promise
 compatibility with every ZIP reader, target filesystem, installer, or operating
-system. Consumers may interpret the same archive differently.
+system. Consumers may interpret the same archive differently. Non-ASCII names
+without the UTF-8 flag are unsupported rather than interpreted using a guessed
+legacy encoding. Uppercase folding and COM0/LPT0 blocking are conservative
+profile rules, not verified filesystem behavior. Set-ID, sticky, and world-
+writable mode bits are also forbidden. This scanner does not test extraction.
+
+ZIP signatures in member contents remain ordinary bytes. The chosen final EOCD
+must fit the strict contiguous-layout model, but this does not establish that
+all other readers choose the same view of adversarial metadata. Unsupported
+reader behavior is a compatibility and security boundary.
 
 The checker never extracts members. A result is not authorization to extract an
 archive into a sensitive directory, overwrite files, follow links, or run a
@@ -57,7 +67,8 @@ program. The downstream extractor still needs its own protections.
 Archive bytes, metadata counts and sizes, declared uncompressed sizes, ratios,
 and actual streamed bytes can be constrained by the implementation. Declared
 metadata is not proof of actual decompressed size, so actual reads must also
-stay within the stream budgets.
+stay within the stream budgets. A decoded stream is also stopped after at most
+one byte beyond its declared size, even when a larger configured budget remains.
 
 These are application-level checks, not hard operating-system quotas. Parsing,
 allocation, and decompression occur within Python and its compression
@@ -88,16 +99,38 @@ review.
 
 ### Misleading integrity claims
 
-Reported SHA-256 hashes record fully read member bytes. An external
+On a complete pass, reported SHA-256 hashes record fully read member bytes and
+the exact compressed archive, including metadata. Failed or incomplete results
+publish neither kind of hash; later input-change or report-publication errors
+also clear them. This reduces known-secret fingerprinting, but passing archives
+can contain secrets these indicators miss. An external
 expected-hash manifest is a reference, not a signature or proof of publisher
 identity. An attacker who can replace both artifact and manifest can supply
 matching values. Hashes do not establish provenance, malware absence,
-or reproducibility. Do not treat partial member hashes from an incomplete check as a complete
-inventory.
+or reproducibility. An incomplete check has no hash inventory.
 
 A result concerns the artifact as observed during that invocation. Keep inputs
 stable while checking, and preserve and distribute the exact checked artifact.
-Concurrent writes or later replacement are outside the release guarantee.
+Compare the reported archive digest against the artifact distributed. This does
+not prevent a later replacement; concurrent writes are not an immutable snapshot
+and remain outside the release guarantee.
+
+### Report publication and command-line trust
+
+Scan acceptance requires a valid schema-2 JSON `pass` report and exit 0 from a
+fixed, trusted scan invocation. Exact `-h` and `--help` are conventional
+informational success modes; they do not produce a scan result. Place `--`
+before the artifact name and never forward untrusted extra options.
+
+A requested report is fully written and fsynced in a private same-directory
+temporary file before atomic no-clobber hard-link publication. Write, close,
+fsync, or link failure before publication cannot leave a partial final target.
+Existing paths, including symlinks, are never overwritten. The directory and
+its writers are trusted; this is not a defense against a hostile co-tenant who
+can replace directory entries. Unsupported publication primitives fail closed.
+Interruption or cleanup failure can leave a hidden temporary file, potentially
+including passing-report hashes after a failed publication. No general
+power-loss durability or guaranteed secure cleanup is promised.
 
 ### Runtime or implementation vulnerabilities
 
@@ -116,7 +149,7 @@ isolation when the archive's producer is untrusted.
   corrupt, encrypted, or over-budget input. Treat this as a rejected release.
 
 Do not turn a nonzero exit into success because a report has few findings, a
-hash list exists, or part of the archive was readable. If limits must change,
+part of the archive was readable, or an older report exists at the output path. If limits must change,
 review the cause and policy first; blindly increasing limits defeats the gate.
 
 ## Explicit non-goals

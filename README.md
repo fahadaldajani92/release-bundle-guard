@@ -3,7 +3,7 @@
 An offline, standard-library-only Python checker for ZIP release policies.
 It checks whether a supported ZIP stays within a separately reviewed path
 allowlist and resource budget, flags selected unsafe metadata and narrow
-secret indicators, and records SHA-256 hashes for fully inspected files.
+secret indicators, and records SHA-256 hashes only after a complete passing scan.
 An optional external hash manifest can pin the expected file set and contents.
 
 **Status: early prototype.** This is not antivirus, a general secret scanner,
@@ -20,7 +20,7 @@ claimed.
 - Enforces configured archive, member-count, expanded-byte, ratio, and elapsed-
   time checks, with actual streamed-byte accounting.
 - Looks for a deliberately small set of ASCII secret and private-path indicators.
-- Emits member IDs, categories, sizes, and hashes rather than matched values,
+- Emits member IDs and categories, with content hashes only on `pass`, rather than matched values,
   source excerpts, or member names.
 - Optionally compares all regular-file paths and hashes with an external
   manifest.
@@ -32,14 +32,15 @@ artifacts, repair archives, or inspect nested archives recursively.
 ## Run from the source directory
 
 No package installation is needed for source-tree execution. Use a maintained
-Python 3.10 or newer (the current test run uses Python 3.12).
+Python 3.10 or newer. Run the tests below in the intended environment; no CI
+coverage or cross-platform verification is implied by the version requirement.
 
 Create `release-policy.json` alongside, and outside, the release ZIP:
 
 ```json
 {
   "version": 1,
-  "allow": ["README.txt", "assets/*.txt"],
+  "allow": ["README.txt", "assets/", "assets/*.txt"],
   "required": ["README.txt"],
   "forbidden": [],
   "limits": {
@@ -56,22 +57,32 @@ Create `release-policy.json` alongside, and outside, the release ZIP:
 Check a local artifact from the source directory:
 
 ```sh
-python -B -m release_bundle_guard demo-release.zip --policy release-policy.json
+python -B -m release_bundle_guard --policy release-policy.json -- demo-release.zip
 ```
 
 Use `--format json` for a machine-readable report. Use `--report new-report.json`
 to request a report file, and select JSON explicitly if desired:
 
 ```sh
-python -B -m release_bundle_guard demo-release.zip --policy release-policy.json --format json --report new-report.json
+python -B -m release_bundle_guard --policy release-policy.json --format json --report new-report.json -- demo-release.zip
 ```
 
-`--report` creates a new file and refuses to overwrite any existing path.
+`--report` publishes a complete new file and refuses to overwrite any existing
+path, including a symlink. It first writes a private temporary file in the same
+directory, flushes and fsyncs it, then publishes it through an atomic no-clobber
+hard link. Filesystems/platforms without this operation return `incomplete`;
+there is no overwrite fallback. Before publication, an error leaves the final
+destination absent. Existing destinations remain untouched. Use a directory
+whose writers you trust. Temporary-file cleanup is best effort; interruption or
+cleanup failure can leave a hidden temporary file containing report data and
+hashes, even when the final output reports a publication error. This is not a crash-durability
+guarantee for the directory entry.
 Input files must be regular files; final-component symlinks are refused on
 platforms that support `O_NOFOLLOW`.
 
 The `-B` switch disables Python bytecode-cache writes. The application itself
-only writes a report when `--report` is requested. Shell redirection, CI logging,
+only writes the requested report and its temporary staging file when `--report`
+is requested. Shell redirection, CI logging,
 and other software may independently save output.
 
 All filenames and policy examples here are synthetic. Keep real policies and
@@ -89,6 +100,10 @@ regular files, not directory placeholders.
 Review patterns against the intended release layout. A broad pattern such as
 `*` is permissive and should not be mistaken for a curated release policy.
 A permitted name does not make the bytes inside that member trustworthy.
+With a broad allowlist, a forbidden `*.pem` does not block `KEY.PEM`, and
+`*/.git/*` does not block top-level `.git/config`. Use an explicit narrow
+allowlist and deliberate spelling/case variants where needed. The example
+policy includes both `.git/*` and `*/.git/*`; patterns are not silently folded.
 
 Keep the policy under independent review. Do not let an untrusted archive
 provide or choose its own acceptance policy. Changing the policy can change the
@@ -114,7 +129,7 @@ This synthetic manifest expects exactly one regular file, an empty
 Directory entries are not part of the expected regular-file set.
 
 ```sh
-python -B -m release_bundle_guard demo-release.zip --policy release-policy.json --manifest expected-manifest.json --format json
+python -B -m release_bundle_guard --policy release-policy.json --manifest expected-manifest.json --format json -- demo-release.zip
 ```
 
 Create and review the reference through a trusted process. Hash comparison
@@ -130,19 +145,48 @@ An attacker who can replace both archive and manifest can make them agree.
 | `fail` | `1` | Inspection completed and found one or more policy violations. |
 | `incomplete` | `2` | Required inspection did not complete; reject the artifact. |
 
-Only exit `0` is an accepting result. Unsupported input, corruption, encryption,
+For an actual scan invocation, accept only exit `0` together with a valid JSON
+report whose `schema_version` is `2`, `status` is `pass`, and archive identity
+fields are present. `-h` and `--help` are informational modes: they conventionally
+exit `0` without scanning or emitting a scan report. Abbreviated options such as
+`--he` are rejected. A help exit is not an artifact acceptance. Unsupported input, corruption, encryption,
 or resource-limit failures must not be treated as a pass, even if no secret
-indicator is reported or some file hashes are available. A partial report is
+indicator is reported. Failed and incomplete reports contain no hashes. A partial report is
 not a complete inventory or a guarantee about the uninspected bytes.
 
-Use the process exit code in automation. Do not ignore nonzero exits or infer
-success merely from the presence of a report file. Command-line usage errors
-also produce a nonzero exit.
+Use a fixed, trusted option list in automation, request JSON, and put `--` before
+the archive argument so a name beginning with `-` cannot become an option. Do
+not forward archive-controlled extra arguments. Check both the exit code and
+JSON scan status; do not infer success from a report file, a human PASS line, or
+exit `0` alone. Usage errors produce exit `2`. A report from another invocation
+may already exist at a refused output path.
+
+### Report schema 2 and archive identity
+
+A passing JSON report includes `archive_sha256`, `archive_bytes`, and `hashes`
+(member ID, SHA-256, and expanded-byte count). The archive digest covers every
+compressed artifact byte, including names, modes, and comments. Compare it to
+the exact artifact you will distribute. It provides byte identity, not publisher
+authentication, and cannot stop later replacement. Keep the input stable while
+checking; change detection is best effort rather than an immutable snapshot.
+
+For every `fail` or `incomplete` result, including a later input-change or report-
+publication error, `archive_sha256` and `archive_bytes` are `null` and `hashes` is
+empty. This is an intentional change from report schema 1. Hashes are still
+computed internally for manifest comparison, but are not published for rejected
+inputs. Schema 2 is not backward-compatible with consumers expecting hashes in
+failed reports.
+
+PASS-only hashing reduces known-secret fingerprint disclosure. It does not make
+passing reports nonsensitive: undetected secrets may remain, and a digest can
+confirm guesses about candidate bytes. Review any report before sharing it.
 
 ## Supported ZIP scope
 
 The prototype intentionally accepts a narrow subset: single-disk ZIP32 archives
-with stored or deflated members, FAT/Unix creator metadata, and no extra fields. ZIP64, split/multidisk
+with stored or deflated members, FAT/Unix creator metadata, and no extra fields.
+Names must be ASCII unless the ZIP UTF-8 flag is set; legacy non-ASCII names are
+unsupported because readers may decode them differently. ZIP64, split/multidisk
 archives, encryption, data descriptors, unsupported compression, unfamiliar
 flags, unknown creator hosts, and every nonempty extra-field block are rejected as incomplete. Some valid ZIPs
 produced by other tools are therefore outside scope.
@@ -150,7 +194,12 @@ produced by other tools are therefore outside scope.
 Do not automatically repackage rejected files just to obtain a pass: review why
 they were rejected and preserve the identity of the actual artifact being
 released. The checker does not recurse into archive files stored as members.
-Their raw bytes may be hashed, but their contained files are not inspected.
+Their raw bytes may be hashed on a passing scan, but their contained files are
+not inspected. ZIP signature bytes inside a member are ordinary data. This
+parser chooses the final EOCD signature and requires contiguous local records,
+central records, and the final comment length to account for the archive.
+Appended second EOCD records are rejected. It does not prove that every other
+ZIP reader chooses the same view of crafted metadata or nested content.
 
 ## Indicator and resource limits
 
@@ -188,7 +237,7 @@ reports and external manifests as potentially sensitive. See
 
 All values must be positive; byte and count limits must be integers. The ratio
 uses compressed member bytes with a denominator of at least one. A stream may
-produce at most one byte beyond a configured byte or ratio budget to establish
+produce at most one byte beyond a declared size, configured byte budget, or ratio budget to establish
 that it exceeds that budget, then inspection stops. Stream output is processed
 in chunks no larger than 64 KiB. Limits are not an OS memory guarantee.
 
@@ -199,10 +248,16 @@ keys, duplicate JSON keys, non-finite values, and invalid limits are rejected.
 
 ZIP member names must use relative slash-separated paths. Controls, backslashes,
 colons, empty/dot/dot-dot components, Windows-invalid characters and reserved
-names, trailing dots/spaces, NFC/case-fold collisions, and file/directory prefix
+names, trailing dots/spaces, NFC/case-fold/uppercase collisions, and file/directory prefix
 conflicts are rejected. This is a deliberately conservative policy, not a
 complete model of every filesystem. Policies match original decoded names;
 normalization is used for collision checks rather than silently renaming files.
+Uppercase folding deliberately catches additional names such as dotless `ı`
+versus `I`. The reserved-name policy includes `COM0` through `COM9` and `LPT0`
+through `LPT9`; the zero forms are conservative exclusions, not a claim that
+Microsoft reserves them. Set-ID, sticky, and world-writable Unix mode bits are
+also forbidden by this profile. No extraction behavior on NTFS, APFS, or another
+filesystem is asserted by these conservative checks.
 
 ## Tests
 

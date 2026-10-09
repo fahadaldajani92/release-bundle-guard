@@ -20,9 +20,16 @@ This redaction is not a guarantee that output contains no sensitive data:
 
 - External expected-hash manifests contain member paths and SHA-256 hashes;
   those paths may themselves contain identifiers or secrets.
-- Reports contain IDs, sizes, hashes, counts, and categories that can expose
-  unreleased project details.
+- Reports contain IDs, counts, and categories that can expose unreleased project
+  details. Passing reports also include sizes, member hashes, and an archive hash.
 - Hashes can let someone who already has candidate bytes recognize those bytes.
+
+Report schema 2 withholds all member and archive hashes for every failed or
+incomplete check, including secret/private-path findings, input changes, and
+report-publication errors. This avoids deliberately publishing a fingerprint
+for a known-rejected secret-bearing file or archive. It is not enough to publish
+passing reports freely: a narrow detector can miss secrets, and hashes still
+permit offline recognition or candidate guessing.
 
 Review every report and manifest before sharing it. Do not publish private
 artifacts or raw reports as examples. Use synthetic files and credentials for
@@ -32,8 +39,14 @@ bug reports and tests.
 
 The checker does not extract archive members, modify their contents, or create
 a persistent scanning database. Command-line output can be saved by the caller, and `--report` explicitly
-requests a report file. The caller controls where output goes and how long it
-is retained. Python may write bytecode caches unless invoked with `-B`. Keep
+requests a report file. Publication uses a private, same-directory temporary
+file before an atomic no-clobber hard link. The final destination is never
+published partially, but interrupted operations or failed cleanup may leave a
+hidden temporary file. Such a staging file can contain the full passing report
+and its hashes even when final publication fails and stdout suppresses hashes.
+Use a trusted destination directory and review leftover
+files after interrupted runs. The caller controls where output goes and how
+long it is retained. Python may write bytecode caches unless invoked with `-B`. Keep
 policies and reports outside the release archive.
 
 Deleting a report does not remove copies retained by CI logs, shell history,

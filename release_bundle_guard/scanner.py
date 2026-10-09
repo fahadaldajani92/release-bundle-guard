@@ -147,8 +147,11 @@ class Scanner:
             if next_position > end_offset:
                 raise StopScan("corrupt_zip", ident)
             raw_name = self.read(position + CENTRAL.size, name_size)
+            if not flags & 0x800 and not raw_name.isascii():
+                # Legacy encodings can be interpreted differently by readers.
+                raise StopScan("unsupported_zip", ident)
             try:
-                name = raw_name.decode("utf-8" if flags & 0x800 else "cp437")
+                name = raw_name.decode("utf-8" if flags & 0x800 else "ascii")
             except UnicodeError:
                 raise StopScan("corrupt_zip", ident) from None
             self.extras(self.read(position + CENTRAL.size + name_size, extra_size))
@@ -206,6 +209,8 @@ class Scanner:
                 file_keys.add(key)
             mode = member.external >> 16
             kind = stat.S_IFMT(mode)
+            if mode & 0o7002:
+                self.report.add("unsafe_permissions", ident)
             expected = stat.S_IFDIR if member.directory else stat.S_IFREG
             if (kind not in (0, expected) or member.external & 0xFFC8
                     or (member.external & 0x10 and not member.directory)):
@@ -238,7 +243,8 @@ class Scanner:
         limits, actual, crc, tail = self.policy.limits, 0, 0, b""
         digest = hashlib.sha256()
         def output_limit():
-            return max(1, min(CHUNK, limits["max_member_bytes"] - actual + 1,
+            return max(1, min(CHUNK, member.size - actual + 1,
+                              limits["max_member_bytes"] - actual + 1,
                               limits["max_total_bytes"] - self.report.bytes_scanned + 1,
                               int(max(member.compressed, 1) * limits["max_ratio"]) - actual + 1))
         def consume(block):
@@ -252,6 +258,8 @@ class Scanner:
                 raise StopScan("total_size_limit", member.ident)
             if actual > max(member.compressed, 1) * limits["max_ratio"]:
                 raise StopScan("ratio_limit", member.ident)
+            if actual > member.size:
+                raise StopScan("corrupt_zip", member.ident)
             digest.update(block)
             crc = zlib.crc32(block, crc)
             self.indicators(tail + block, member.ident)
@@ -292,9 +300,19 @@ class Scanner:
         self.tick()
         if member.is_regular:
             hexdigest = digest.hexdigest()
-            self.report.hashes.append({"member": member.ident, "sha256": hexdigest, "bytes": actual})
+            if self.report.status == "pass":
+                self.report.hashes.append({"member": member.ident, "sha256": hexdigest, "bytes": actual})
             if self.manifest is not None and self.manifest.get(member.name) != hexdigest:
                 self.report.add("manifest_mismatch", member.ident)
+
+    def bind_archive(self):
+        """Hash the complete compressed artifact only after a passing scan."""
+        digest = hashlib.sha256()
+        for position in range(0, self.size, CHUNK):
+            digest.update(self.read(position, min(CHUNK, self.size - position)))
+        self.tick()
+        self.report.archive_sha256 = digest.hexdigest()
+        self.report.archive_bytes = self.size
 
     def run(self):
         members = self.directory()
@@ -324,6 +342,8 @@ def scan_archive(path, policy, manifest=None, *, clock=time.monotonic):
             before = os.fstat(stream.fileno())
             scanner = Scanner(stream, policy, manifest, report, clock)
             scanner.run()
+            if report.status == "pass":
+                scanner.bind_archive()
             after = os.fstat(stream.fileno())
             if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
                 report.add("input_changed", incomplete=True)
@@ -338,4 +358,6 @@ def scan_archive(path, policy, manifest=None, *, clock=time.monotonic):
     except Exception:
         # Do not leak exception messages, filenames, paths, or archive bytes.
         report.add("scan_error", incomplete=True)
+    if report.status != "pass":
+        report.clear_hashes()
     return report

@@ -7,8 +7,6 @@ import os
 from pathlib import Path
 import stat
 import struct
-import subprocess
-import sys
 import tempfile
 import unittest
 import warnings
@@ -144,7 +142,7 @@ class GuardTests(unittest.TestCase):
 
     def test_actual_deflate_limit_with_lying_headers(self):
         self.make_zip([("a", b"X" * 8192)], zipfile.ZIP_DEFLATED)
-        self.patch([("local", 22, "<I", 1), ("central", 24, "<I", 1)])
+        self.patch([("local", 22, "<I", 128), ("central", 24, "<I", 128)])
         report = self.run_scan(policy=self.policy(limits={"max_member_bytes": 128, "max_ratio": 1000}))
         self.assertIn("member_size_limit", self.codes(report))
         self.assertEqual(report.bytes_scanned, 129)
@@ -152,7 +150,7 @@ class GuardTests(unittest.TestCase):
 
     def test_actual_stored_limit_with_lying_headers(self):
         self.make_zip([("a", b"X" * 8192)])
-        self.patch([("local", 22, "<I", 1), ("central", 24, "<I", 1)])
+        self.patch([("local", 22, "<I", 128), ("central", 24, "<I", 128)])
         report = self.run_scan(policy=self.policy(limits={"max_member_bytes": 128}))
         self.assertIn("member_size_limit", self.codes(report))
         self.assertEqual(report.bytes_scanned, 129)
@@ -283,14 +281,14 @@ class GuardTests(unittest.TestCase):
             position = blob.find(b"PK\x03\x04", position)
             if position < 0:
                 break
-            struct.pack_into("<I", blob, position + 22, 1)
+            struct.pack_into("<I", blob, position + 22, 64)
             position += 4
         position = 0
         while True:
             position = blob.find(b"PK\x01\x02", position)
             if position < 0:
                 break
-            struct.pack_into("<I", blob, position + 24, 1)
+            struct.pack_into("<I", blob, position + 24, 64)
             position += 4
         # A valid first member is needed to reach the second stream.
         struct.pack_into("<I", blob, 22, 128)
@@ -300,7 +298,8 @@ class GuardTests(unittest.TestCase):
         self.assertIn("total_size_limit", self.codes(report))
         self.assertEqual(report.bytes_scanned, 193)
         self.make_zip([("a", b"X" * 8192)], zipfile.ZIP_DEFLATED)
-        self.patch([("local", 22, "<I", 1), ("central", 24, "<I", 1)])
+        compressed = struct.unpack_from("<I", self.archive.read_bytes(), 18)[0]
+        self.patch([("local", 22, "<I", compressed * 2), ("central", 24, "<I", compressed * 2)])
         report = self.run_scan(policy=self.policy(limits={"max_ratio": 2}))
         self.assertIn("ratio_limit", self.codes(report))
         compressed = struct.unpack_from("<I", self.archive.read_bytes(), 18)[0]

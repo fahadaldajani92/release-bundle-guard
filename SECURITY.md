@@ -25,8 +25,19 @@ remaining risks.
 - Treat reports and manifests as potentially sensitive. Manifests contain member paths, and
   report hashes, sizes, counts, and categories can still disclose information.
   Redaction is not a confidentiality guarantee.
-- Reject nonzero exit codes. Preserve the exact artifact that was checked;
-  changing or replacing it afterwards invalidates the result.
+- For a scan, require exit 0 and schema-2 JSON `status: pass` with archive identity
+  fields. Help exits 0 without scanning and is never an accepting scan result.
+  Use fixed trusted options and place `--` before the artifact filename.
+- Preserve the exact checked artifact and verify its reported whole-archive
+  SHA-256 before distribution. The digest establishes byte identity, not
+  authenticity or protection against later replacement. Detection of concurrent
+  mutation is best effort.
+- Report hashes are emitted only after a complete passing scan. Failed and
+  incomplete outputs suppress every hash, but passing reports may still expose
+  undetected secrets through candidate fingerprinting. Review before sharing.
+- Put requested reports in a directory whose writers you trust. Atomic no-clobber
+  publication requires hard-link support; unsupported filesystems fail closed.
+  Temporary files may remain after interruption or failed cleanup.
 
 The checker does not extract archive members or execute their contents. That
 reduces some risks; it does not make subsequent extraction, installation, or

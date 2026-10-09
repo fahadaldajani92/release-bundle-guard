@@ -65,18 +65,18 @@ def valid_name(name):
         return False
     if name.startswith("/") or any(char in name for char in '\\:*?|<>"'):
         return False
-    if any(unicodedata.category(char).startswith("C") for char in name):
-        return False
     parts = name[:-1].split("/") if name.endswith("/") else name.split("/")
     if any(part in ("", ".", "..") or part.endswith((" ", ".")) for part in parts):
         return False
-    reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(f"COM{i}" for i in range(1, 10)),
-                *(f"LPT{i}" for i in range(1, 10)),
+    reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(f"COM{i}" for i in range(0, 10)),
+                *(f"LPT{i}" for i in range(0, 10)),
                 *(f"COM{i}" for i in "¹²³"), *(f"LPT{i}" for i in "¹²³")}
     return not any(part.split(".")[0].upper() in reserved for part in parts)
 
 def name_key(name):
-    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
+    # Deliberately conservative: add uppercase folding, including dotless i.
+    # This is a release policy, not an exact model of any filesystem.
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold().upper())
 
 @dataclass(frozen=True)
 class Policy:

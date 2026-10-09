@@ -2,7 +2,7 @@
   "version": 1,
   "allow": ["README.txt", "assets/", "assets/*"],
   "required": ["README.txt"],
-  "forbidden": ["*.pem", "*.key", "*.env", "*/.git/*"],
+  "forbidden": ["*.pem", "*.key", "*.env", ".git/*", "*/.git/*"],
   "limits": {
     "max_archive_bytes": 67108864,
     "max_members": 1000,
