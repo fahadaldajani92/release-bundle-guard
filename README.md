@@ -252,7 +252,7 @@ credentials or determine whether a match is live. Synthetic strings may trigger
 it. Encoding, obfuscation, novel formats, and nested archives can evade it.
 A pass is not a privacy, legal, licensing, or general release-content review.
 
-## Tests and license
+## Tests
 
 ```sh
 python -B -m unittest discover -s tests -v
@@ -263,5 +263,8 @@ They require no real artifacts, credentials, network service, or dependency
 install. They do not establish real extractor behavior, production adoption,
 comprehensive coverage, or the absence of vulnerabilities.
 
-A license has not been selected for this prototype. No copyright identity,
-maintenance commitment, or security-reporting endpoint is established here.
+## License
+
+Distributed under the [MIT License](LICENSE).
+
+No maintenance commitment or security-reporting endpoint is established here.
