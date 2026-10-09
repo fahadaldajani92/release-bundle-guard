@@ -5,12 +5,11 @@ import math
 import os
 import re
 import stat
-import unicodedata
 
-DEFAULTS = {"max_archive_bytes": 64 * 1024**2, "max_members": 1000,
+DEFAULTS = {"max_archive_bytes": 16 * 1024**2, "max_members": 1000,
             "max_member_bytes": 8 * 1024**2, "max_total_bytes": 64 * 1024**2,
             "max_ratio": 100, "max_seconds": 10}
-CAPS = {"max_archive_bytes": 256 * 1024**2, "max_members": 10000,
+CAPS = {"max_archive_bytes": 32 * 1024**2, "max_members": 10000,
         "max_member_bytes": 64 * 1024**2, "max_total_bytes": 256 * 1024**2,
         "max_ratio": 1000, "max_seconds": 60}
 MAX_NAME_BYTES = 1024
@@ -59,7 +58,7 @@ def read_json(path, limit):
         raise ConfigurationError("invalid configuration") from exc
 
 def valid_name(name):
-    if not name or any(unicodedata.category(char).startswith("C") for char in name):
+    if not name or not name.isascii() or any(ord(char) < 32 or ord(char) == 127 for char in name):
         return False
     if len(name.encode("utf-8")) > MAX_NAME_BYTES:
         return False
@@ -69,14 +68,12 @@ def valid_name(name):
     if any(part in ("", ".", "..") or part.endswith((" ", ".")) for part in parts):
         return False
     reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(f"COM{i}" for i in range(0, 10)),
-                *(f"LPT{i}" for i in range(0, 10)),
-                *(f"COM{i}" for i in "¹²³"), *(f"LPT{i}" for i in "¹²³")}
+                *(f"LPT{i}" for i in range(0, 10))}
     return not any(part.split(".")[0].upper() in reserved for part in parts)
 
 def name_key(name):
-    # Deliberately conservative: add uppercase folding, including dotless i.
-    # This is a release policy, not an exact model of any filesystem.
-    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold().upper())
+    # Names accepted by this profile are ASCII; no Unicode database is used.
+    return name.upper()
 
 @dataclass(frozen=True)
 class Policy:
@@ -99,7 +96,7 @@ class Policy:
             for pattern in value:
                 if type(pattern) is not str or not pattern or len(pattern) > 512:
                     raise ConfigurationError("invalid pattern")
-                if any(unicodedata.category(c).startswith("C") for c in pattern):
+                if not pattern.isascii() or any(ord(c) < 32 or ord(c) == 127 for c in pattern):
                     raise ConfigurationError("invalid pattern")
             groups[key] = tuple(value)
         requested = obj.get("limits", {})

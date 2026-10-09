@@ -1,168 +1,146 @@
 # Threat model
 
-## Purpose and assets
+## Purpose, assets, and trust
 
-Release Bundle Guard provides a repeatable, local gate for selected properties
-of ZIP release artifacts. Its useful assets are the release contents, the
-operator's machine and credentials, the separately reviewed policy, and the
-integrity and interpretation of the resulting report.
+Release Bundle Guard is a local gate for selected properties of a deliberately
+restricted ZIP32 profile. Protected interests include release contents,
+operator credentials, external acceptance policy, and correct interpretation
+of the resulting report. The archive can be entirely attacker-controlled:
+bytes, names, metadata, ordering, compression, and malformed records.
 
-The attacker may control every byte of an archive: member contents, file names,
-metadata, compression streams, ordering, and malformed structures. A benign
-build can also accidentally include unwanted files or credentials. Archive
-names and file contents are data, never instructions to execute.
+The caller, checker source, Python runtime, operating system, external policy,
+optional manifest, and invocation are trusted. Report directories and their
+writers must be trusted. A compromised host or configuration is outside scope.
+Archive content is data, never an instruction to execute.
 
-The policy, checker source, Python runtime, invocation, and host operating
-system are trusted inputs. A party able to alter the policy or checker can
-change what is accepted. A compromised host is outside this tool's protection.
+## Data flow
 
-## Boundaries
+1. Open the explicitly selected regular-file ZIP without following the final
+   symlink where supported, reject excessive initial size, and capture at most
+   that size plus one byte into immutable memory.
+2. Check size/time metadata around capture and reject detected changes or
+   excess bytes. Close the source. No disk snapshot is made.
+3. Parse, validate, decompress, and hash only the immutable captured bytes,
+   applying the external policy, actual-output budgets, and narrow indicators.
+4. Compare any external expected-hash manifest. On complete pass only, report
+   member hashes plus a hash and size covering the complete captured artifact.
+5. Write stdout. If requested, stage a private report and attempt no-clobber
+   publication within one opened trusted directory.
 
-1. The operator selects a local archive and a policy stored outside that archive.
-2. The checker parses ZIP metadata and checks supported names and entry types.
-3. It reads supported member streams under configured limits, hashes bytes, and
-   applies narrow byte-pattern secret indicators.
-4. It optionally compares completed regular-file hashes against an external
-   expected-hash manifest, then emits a report for the operator to interpret.
-   Only a complete pass publishes member hashes and a whole-archive digest.
+There is no extraction, execution, installation, repair, recursive nested-
+archive inspection, signature download, upload, or application network lookup.
 
-There is no extraction, installation, execution, repair, nested application
-launch, or network lookup. The tool does not trust an archive-embedded policy
-or a claimed publisher identity. Reports use opaque member IDs and redact matching contents. External
-expected-hash manifests still contain member paths.
+## Unwanted files and policy mistakes
 
-## Threats and controls
+Allow and required globs are case-sensitive; forbidden globs are ASCII
+case-insensitive. `*` spans path separators. These deliberate semantics must
+be reviewed with the release layout. A broad allowlist plus a few denied suffixes
+is not comprehensive content approval. Required patterns need regular files.
 
-### Unwanted release files
+The archive never supplies or selects its own policy. Retain the exact external
+policy, optional manifest, and checker/runtime used: the artifact hash does not
+identify those inputs. An attacker who controls both archive and reference
+can make their hashes agree. No publisher identity is authenticated.
 
-A separately supplied allowlist narrows the paths permitted in a release.
-Policy mistakes remain possible: a permissive pattern can allow unwanted
-files, and a permitted file can contain malicious or confidential content.
-Review policy changes alongside release-layout changes. Passing the allowlist
-is not content approval.
+## Name, metadata, and reader ambiguity
 
-### Unsafe or ambiguous ZIP metadata
+The profile accepts ASCII names only, irrespective of UTF-8 flags. It rejects
+all non-ASCII names rather than relying on a legacy code page, Unicode database,
+normalization convention, best-fit conversion, or heuristic filesystem model.
+This includes legitimate international names and reduces compatibility.
 
-The checker rejects names or member types its safety checks regard as unsafe,
-including traversal-like paths and link-like entries. Unsupported, encrypted,
-or corrupt input cannot produce a passing result. These checks do not promise
-compatibility with every ZIP reader, target filesystem, installer, or operating
-system. Consumers may interpret the same archive differently. Non-ASCII names
-without the UTF-8 flag are unsupported rather than interpreted using a guessed
-legacy encoding. Uppercase folding and COM0/LPT0 blocking are conservative
-profile rules, not verified filesystem behavior. Set-ID, sticky, and world-
-writable mode bits are also forbidden. This scanner does not test extraction.
+Names must be portable relative slash-separated paths under the documented
+conservative rules. Duplicate/case-insensitive conflicts, file/directory-prefix
+conflicts, symlinks, special files, unsupported DOS metadata, and set-ID/sticky/
+world-writable mode bits cannot pass. COM0/LPT0 are conservative policy
+exclusions rather than asserted operating-system reserved names.
 
-ZIP signatures in member contents remain ordinary bytes. The chosen final EOCD
-must fit the strict contiguous-layout model, but this does not establish that
-all other readers choose the same view of adversarial metadata. Unsupported
-reader behavior is a compatibility and security boundary.
+Every archive/member comment and nonempty extra field is unsupported. This
+also excludes earlier EOCD records hidden in comments. Contiguous local and
+central records, exact header agreement, and end-record lengths must account
+for the captured ZIP. Signatures within regular member payloads are ordinary
+bytes and remain allowed; nested archives are not recursively checked.
+These restrictions are not proof that every other reader chooses the same view.
+The checker never extracts; a pass is not permission to trust an extractor.
 
-The checker never extracts members. A result is not authorization to extract an
-archive into a sensitive directory, overwrite files, follow links, or run a
-program. The downstream extractor still needs its own protections.
+## Consistency and artifact identity
 
-### Resource exhaustion
+The same immutable byte copy supplies every parse, decoded stream, and complete
+archive digest. A second read of a changing file cannot substitute different
+hash input after inspection. Capture itself is not a locked, atomic filesystem
+snapshot: source bytes can change while being read, and metadata checks are
+best effort. Whatever bytes were captured are the bytes validated and hashed.
 
-Archive bytes, metadata counts and sizes, declared uncompressed sizes, ratios,
-and actual streamed bytes can be constrained by the implementation. Declared
-metadata is not proof of actual decompressed size, so actual reads must also
-stay within the stream budgets. A decoded stream is also stopped after at most
-one byte beyond its declared size, even when a larger configured budget remains.
+The original path may change after capture without changing the result. No
+ongoing monitoring or lock is provided. Compare the report's archive digest
+with the exact bytes distributed and preserve them. A hash establishes byte
+identity, not provenance, benign behavior, reproducibility, or authenticity.
 
-These are application-level checks, not hard operating-system quotas. Parsing,
-allocation, and decompression occur within Python and its compression
-libraries. Some work occurs before a limit can be detected; bounded input size
-does not imply a small or precisely bounded CPU or memory cost. Elapsed-time checks are cooperative and cannot interrupt an ongoing library
-operation. The checker has no process-level memory limit, CPU quota, or
-guaranteed deadline.
+## Resource exhaustion
 
-For attacker-controlled archives, use a low-privilege, disposable environment
-with external memory, CPU, and wall-clock limits. Keep unrelated sensitive data
-and credentials out of that environment. Resource-limit rejection means the
-check is incomplete, not that the unseen remainder is safe.
+Capture has a 16 MiB default and 32 MiB hard compressed-archive cap. Parsing
+bounds member counts, central-directory size, names and other metadata.
+Decompression checks actual bytes, declared size, per-member/total budgets,
+ratio, EOF, trailing data, and CRC. At most one extra byte is decoded to prove
+a declared-size or budget breach, with output chunks no larger than 64 KiB.
 
-### Secret and private-data leakage
+A full compressed copy resides in memory alongside metadata, stream buffers,
+and report objects; the compressed cap is not a process-memory quota. There
+can be additional transient allocation. Time checks include capture, parsing,
+decompression, and artifact hashing, but are cooperative and cannot interrupt
+an ongoing I/O/library operation. Configuration loading and report publication
+are outside that deadline. No OS CPU/memory/wall-clock isolation is provided.
+Use low privileges and external process limits for hostile data.
 
-Only the implemented secret indicators are checked. They are heuristics,
-not validation that a credential exists or is live. False positives and false
-negatives are expected. Encoding, obfuscation, unsupported content, novel token
-formats, and secrets split across an application's own containers can evade
-these indicators. Nested archive contents are not recursively inspected.
+## Confidentiality and narrow indicators
 
-Findings omit matched values, source excerpts, and member names. External
-expected-hash manifests contain paths, which can include private information or
-secrets placed there by an attacker. Report hashes, sizes, counts, and categories
-can also reveal information. Restrict and review reports before publication. The checker
-does not perform a general personal-data, copyright, license, or compliance
-review.
+Only a small set of ASCII byte-pattern indicators is implemented. False
+positives and negatives are expected. Encoded, obfuscated, novel, non-ASCII,
+and application-specific secrets, including nested content, can be missed.
+No general personal-data, copyright, license, legal, or compliance review occurs.
 
-### Misleading integrity claims
+Current fail/incomplete reports omit every member/archive hash, including when
+a later report operation fails. Names, matches, paths, and exception text are
+not printed. Aggregate counts, scanned-byte totals, and categories still
+reveal information. Passing hashes can identify secret-bearing candidate bytes
+that the indicators missed. External manifests also expose names and hashes.
+Review all outputs before sharing.
 
-On a complete pass, reported SHA-256 hashes record fully read member bytes and
-the exact compressed archive, including metadata. Failed or incomplete results
-publish neither kind of hash; later input-change or report-publication errors
-also clear them. This reduces known-secret fingerprinting, but passing archives
-can contain secrets these indicators miss. An external
-expected-hash manifest is a reference, not a signature or proof of publisher
-identity. An attacker who can replace both artifact and manifest can supply
-matching values. Hashes do not establish provenance, malware absence,
-or reproducibility. An incomplete check has no hash inventory.
+## Invocation and report publication
 
-A result concerns the artifact as observed during that invocation. Keep inputs
-stable while checking, and preserve and distribute the exact checked artifact.
-Compare the reported archive digest against the artifact distributed. This does
-not prevent a later replacement; concurrent writes are not an immutable snapshot
-and remain outside the release guarantee.
+Only exit 0 plus a valid schema-2 JSON pass report is scan acceptance. Exact
+`-h`/`--help` exit 3 and do not scan; abbreviated options are errors. Use fixed
+trusted options and `--` before the artifact name.
 
-### Report publication and command-line trust
+File reports require supported POSIX directory-relative/no-follow operations
+and a trusted local filesystem with hard links. Symlink parents and empty,
+dot, or dot-dot path components are rejected. Parent traversal, mode-0600
+staging, linking, and cleanup share the same opened directory anchor.
+Unsupported primitives fail closed; there is no overwrite fallback.
 
-Scan acceptance requires a valid schema-2 JSON `pass` report and exit 0 from a
-fixed, trusted scan invocation. Exact `-h` and `--help` are conventional
-informational success modes; they do not produce a scan result. Place `--`
-before the artifact name and never forward untrusted extra options.
+A staged report is fully written, checked for short writes, flushed, fsynced,
+and closed before linking. Failures before link do not publish a partial final
+file. The no-clobber link does not deliberately overwrite existing entries.
+Some filesystems, notably remote ones, can complete a link but return an error.
+Then a complete PASS report can exist while the current result is incomplete
+and the exit is 2. The checker does not delete that target or claim rollback;
+a consumer must reject the current nonzero result. This is not a distributed
+transaction or general power-loss durability guarantee.
 
-A requested report is fully written and fsynced in a private same-directory
-temporary file before atomic no-clobber hard-link publication. Write, close,
-fsync, or link failure before publication cannot leave a partial final target.
-Existing paths, including symlinks, are never overwritten. The directory and
-its writers are trusted; this is not a defense against a hostile co-tenant who
-can replace directory entries. Unsupported publication primitives fail closed.
-Interruption or cleanup failure can leave a hidden temporary file, potentially
-including passing-report hashes after a failed publication. No general
-power-loss durability or guaranteed secure cleanup is promised.
+Cleanup is best effort. Interrupted or failed cleanup can leave a private
+hidden staging file, potentially containing a full report and passing hashes.
+Keep report directories outside release staging and review leftovers. No
+secure deletion, encryption, or retention enforcement is provided.
 
-### Runtime or implementation vulnerabilities
+## Runtime defects and verification limits
 
-ZIP handling and decompression depend on the Python runtime and its underlying
-libraries. Defects in them or in this checker may cause crashes, excess resource
-use, incorrect reports, or other failures. Synthetic regression tests do not
-prove the absence of vulnerabilities. Keep the runtime updated and use host
-isolation when the archive's producer is untrusted.
+The checker, Python, and zlib can contain defects causing crashes, incorrect
+results, or resource overuse. Synthetic tests and bounded checks do not prove
+the absence of vulnerabilities. No real-world extractor conversion, filesystem
+normalization, network-filesystem transaction, or cross-platform behavior is
+asserted merely from these tests. Keep the runtime maintained and use host
+isolation when inputs are untrusted.
 
-## Interpreting outcomes
-
-- `pass`: supported checks completed and found no reported policy violations.
-  It is only a result under that policy and implementation.
-- `fail`: one or more violations were found during a completed check.
-- `incomplete`: required inspection could not complete, including unsupported,
-  corrupt, encrypted, or over-budget input. Treat this as a rejected release.
-
-Do not turn a nonzero exit into success because a report has few findings, a
-part of the archive was readable, or an older report exists at the output path. If limits must change,
-review the cause and policy first; blindly increasing limits defeats the gate.
-
-## Explicit non-goals
-
-- Antivirus, behavioral analysis, exploit detection, or execution sandboxing
-- General secret discovery or a guarantee of no credentials or personal data
-- Recursive inspection of nested archives or application-specific containers
-- Authenticating a publisher, verifying signatures, or establishing provenance
-- Reproducible builds, dependency auditing, or supply-chain attestation
-- Safe extraction or execution of a release after checking
-- Hard process-level CPU, memory, or execution-time isolation
-- Proving any legal, licensing, regulatory, or distribution requirement
-
-This prototype has no claimed production deployment, independent audit, or
-security certification. Expand this model only alongside implemented and
-verified controls.
+This prototype has no claimed production deployment, security certification,
+or comprehensive audit. A pass is evidence only for the implemented strict
+profile and chosen trusted configuration.

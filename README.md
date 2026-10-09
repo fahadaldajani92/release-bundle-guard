@@ -1,50 +1,77 @@
 # Release Bundle Guard
 
-An offline, standard-library-only Python checker for ZIP release policies.
-It checks whether a supported ZIP stays within a separately reviewed path
-allowlist and resource budget, flags selected unsafe metadata and narrow
-secret indicators, and records SHA-256 hashes only after a complete passing scan.
-An optional external hash manifest can pin the expected file set and contents.
+An offline, standard-library-only Python checker for a deliberately restricted
+ZIP release profile. It applies an external allowlist, required/forbidden
+patterns, resource budgets, selected metadata checks, narrow text indicators,
+and an optional external SHA-256 manifest.
 
-**Status: early prototype.** This is not antivirus, a general secret scanner,
-a safe-extraction tool, or a guarantee that a release is safe or secret-free.
-A passing report means only that this implementation completed its checks
-under the supplied policy. No production adoption or independent audit is
-claimed.
+**Early prototype.** This is not antivirus, a general secret scanner, a safe
+extractor, or a guarantee that a release is safe or secret-free. A pass means
+only that the implemented checks completed under the supplied configuration.
+No production adoption, security certification, or comprehensive audit is claimed.
 
-## What it does
+## Supported profile
 
-- Reads ZIP metadata and member streams without extracting or executing them.
-- Applies an external allowlist and optional required/forbidden path patterns.
-- Rejects unsafe or ambiguous supported ZIP metadata and unsupported ZIP forms.
-- Enforces configured archive, member-count, expanded-byte, ratio, and elapsed-
-  time checks, with actual streamed-byte accounting.
-- Looks for a deliberately small set of ASCII secret and private-path indicators.
-- Emits member IDs and categories, with content hashes only on `pass`, rather than matched values,
-  source excerpts, or member names.
-- Optionally compares all regular-file paths and hashes with an external
-  manifest.
+- Single-disk ZIP32 with stored or raw-deflated members and FAT/Unix creator metadata
+- ASCII-only member names, including when the ZIP UTF-8 flag is set
+- No archive comments, member comments, or nonempty extra fields
+- Relative slash-separated names; no controls, backslashes, colons, empty/dot/
+  dot-dot components, trailing spaces/dots, or Windows-invalid ASCII characters
+- No duplicate/ASCII-case collisions, file/directory path conflicts, symlinks,
+  special files, inconsistent types, set-ID/sticky/world-writable mode bits,
+  or unsupported DOS attributes
+- Conservative reserved-name exclusions, including COM0–COM9 and LPT0–LPT9;
+  the zero forms are this tool's policy, not a Microsoft naming claim
 
-The application makes no network requests and has no runtime dependencies
-outside the Python standard library. It does not download signatures, upload
-artifacts, repair archives, or inspect nested archives recursively.
+Non-ASCII names are outside scope rather than normalized or interpreted using
+an assumed code page. This excludes ordinary international filenames as well
+as compatibility look-alikes. Name checks use ASCII rules, not a runtime Unicode
+database or a claimed model of NTFS, APFS, or every extractor.
+
+ZIP64, split archives, encryption, data descriptors, unknown compression,
+unsupported creator hosts/flags, comments, and extra fields are incomplete
+results. Some valid ZIPs from common tools therefore cannot pass this profile.
+Do not silently repackage a rejected release just to obtain a pass.
+
+The checker never extracts or executes members, makes no application network
+requests, and does not recurse into nested archives. ZIP signatures within a
+member's payload are ordinary bytes. Comments are rejected entirely, including
+comments that contain an earlier EOCD record. These restrictions reduce
+ambiguous metadata; they do not prove how every other ZIP reader behaves.
 
 ## Run from the source directory
 
-No package installation is needed for source-tree execution. Use a maintained
-Python 3.10 or newer. Run the tests below in the intended environment; no CI
-coverage or cross-platform verification is implied by the version requirement.
+Use maintained Python 3.10 or newer. No installation or runtime dependencies
+outside the standard library are needed. Tests must be run in the intended
+environment; the version requirement does not imply CI or cross-platform coverage.
 
-Create `release-policy.json` alongside, and outside, the release ZIP:
+```sh
+python -B -m release_bundle_guard --policy examples/policy.json -- demo-release.zip
+python -B -m release_bundle_guard --policy examples/policy.json --format json --report new-report.json -- demo-release.zip
+```
+
+Use fixed trusted options and put `--` before the artifact name so a filename
+beginning with `-` cannot become a CLI option. Do not forward untrusted extra
+arguments. `-B` disables Python bytecode-cache writes.
+
+By default the application writes only stdout. Explicit `--report` requests a
+new report plus a private temporary staging file. Shell redirection, CI logs,
+editors, backup agents, and the operating system may independently save data.
+All examples and fixtures in this repository are synthetic.
+
+## External policy
+
+The policy must be selected independently of the archive. An embedded policy
+never configures this checker.
 
 ```json
 {
   "version": 1,
-  "allow": ["README.txt", "assets/", "assets/*.txt"],
+  "allow": ["README.txt", "assets/", "assets/*"],
   "required": ["README.txt"],
-  "forbidden": [],
+  "forbidden": ["*.pem", "*.key", "*.env", ".git/*", "*/.git/*"],
   "limits": {
-    "max_archive_bytes": 67108864,
+    "max_archive_bytes": 16777216,
     "max_members": 1000,
     "max_member_bytes": 8388608,
     "max_total_bytes": 67108864,
@@ -54,66 +81,28 @@ Create `release-policy.json` alongside, and outside, the release ZIP:
 }
 ```
 
-Check a local artifact from the source directory:
+`allow` must be nonempty. `required`, `forbidden`, and individual limits are
+optional. Patterns are ASCII Python `fnmatchcase` globs, not regular expressions:
 
-```sh
-python -B -m release_bundle_guard --policy release-policy.json -- demo-release.zip
-```
+- `allow` and `required` are case-sensitive
+- `forbidden` is ASCII case-insensitive, by comparing lowercase names/patterns
+- `*` spans `/`; `assets/*.txt` can match nested paths
+- Required patterns need regular files, not directory placeholders
 
-Use `--format json` for a machine-readable report. Use `--report new-report.json`
-to request a report file, and select JSON explicitly if desired:
+Thus `*.pem` forbids `assets/server.PEM`, but an allow pattern `assets/*.txt`
+does not allow `assets/FILE.TXT`. Top-level `.git/*` and nested `*/.git/*` are
+separate patterns. A broad allowlist such as `*` remains permissive, even with
+a few forbidden suffixes. A permitted name does not approve its contents.
 
-```sh
-python -B -m release_bundle_guard --policy release-policy.json --format json --report new-report.json -- demo-release.zip
-```
+Retain the exact policy, optional manifest, checker source/version, and runtime
+used for a result. The report's archive hash does not identify or authenticate
+those external inputs. Configuration identity and preservation are the caller's
+responsibility; the tool does not publish extra configuration fingerprints.
 
-`--report` publishes a complete new file and refuses to overwrite any existing
-path, including a symlink. It first writes a private temporary file in the same
-directory, flushes and fsyncs it, then publishes it through an atomic no-clobber
-hard link. Filesystems/platforms without this operation return `incomplete`;
-there is no overwrite fallback. Before publication, an error leaves the final
-destination absent. Existing destinations remain untouched. Use a directory
-whose writers you trust. Temporary-file cleanup is best effort; interruption or
-cleanup failure can leave a hidden temporary file containing report data and
-hashes, even when the final output reports a publication error. This is not a crash-durability
-guarantee for the directory entry.
-Input files must be regular files; final-component symlinks are refused on
-platforms that support `O_NOFOLLOW`.
+## Optional trusted hash manifest
 
-The `-B` switch disables Python bytecode-cache writes. The application itself
-only writes the requested report and its temporary staging file when `--report`
-is requested. Shell redirection, CI logging,
-and other software may independently save output.
-
-All filenames and policy examples here are synthetic. Keep real policies and
-reports outside distributed artifacts, and review reports before sharing.
-
-## Policy patterns and trust
-
-`allow` is required and must not be empty. `required`, `forbidden`, and individual
-limits are optional. Patterns are case-sensitive Python `fnmatchcase` patterns,
-not regular expressions or filesystem traversal expressions. In particular,
-`*` can match `/`: `assets/*.txt` can match nested paths beneath `assets/`.
-The policy applies to archive entries; required patterns are satisfied by
-regular files, not directory placeholders.
-
-Review patterns against the intended release layout. A broad pattern such as
-`*` is permissive and should not be mistaken for a curated release policy.
-A permitted name does not make the bytes inside that member trustworthy.
-With a broad allowlist, a forbidden `*.pem` does not block `KEY.PEM`, and
-`*/.git/*` does not block top-level `.git/config`. Use an explicit narrow
-allowlist and deliberate spelling/case variants where needed. The example
-policy includes both `.git/*` and `*/.git/*`; patterns are not silently folded.
-
-Keep the policy under independent review. Do not let an untrusted archive
-provide or choose its own acceptance policy. Changing the policy can change the
-answer; a pass is meaningful only with the exact policy that was used.
-
-## Optional expected-hash manifest
-
-`--manifest expected-manifest.json` reads an external JSON manifest. It is an
-input for verification, not a command to generate a trusted reference.
-The format is:
+`--manifest expected-manifest.json` verifies an external reference; it does not
+generate a trusted reference. The exact regular-file set must match:
 
 ```json
 {
@@ -124,157 +113,144 @@ The format is:
 }
 ```
 
-This synthetic manifest expects exactly one regular file, an empty
-`README.txt`. It will reject a nonempty file or a different regular-file set.
-Directory entries are not part of the expected regular-file set.
+This example expects exactly one empty regular file named `README.txt`.
+Directory placeholders are not part of the manifest set. Reference names must
+satisfy the ASCII profile. Hashes establish agreement with the reference, not
+publisher authenticity, provenance, or malware absence. An attacker who can
+replace both artifact and manifest can make them agree.
 
 ```sh
-python -B -m release_bundle_guard --policy release-policy.json --manifest expected-manifest.json --format json -- demo-release.zip
+python -B -m release_bundle_guard --policy examples/policy.json --manifest expected-manifest.json --format json -- demo-release.zip
 ```
 
-Create and review the reference through a trusted process. Hash comparison
-establishes agreement with that reference; it does not authenticate a publisher,
-prove provenance, or detect malicious bytes already present in the reference.
-An attacker who can replace both archive and manifest can make them agree.
+## Outcomes and report schema
 
-## Outcomes and release gates
-
-| Status | Exit code | Meaning |
+| Outcome | Exit | Meaning |
 | --- | --- | --- |
-| `pass` | `0` | Supported checks completed; no policy violations were reported. |
-| `fail` | `1` | Inspection completed and found one or more policy violations. |
-| `incomplete` | `2` | Required inspection did not complete; reject the artifact. |
+| `pass` | 0 | Supported checks completed with no reported violations |
+| `fail` | 1 | Completed inspection found one or more violations |
+| `incomplete` | 2 | Required inspection or requested report publication could not complete |
+| Help only | 3 | `-h` or `--help`; no scan and no JSON scan result |
 
-For an actual scan invocation, accept only exit `0` together with a valid JSON
-report whose `schema_version` is `2`, `status` is `pass`, and archive identity
-fields are present. `-h` and `--help` are informational modes: they conventionally
-exit `0` without scanning or emitting a scan report. Abbreviated options such as
-`--he` are rejected. A help exit is not an artifact acceptance. Unsupported input, corruption, encryption,
-or resource-limit failures must not be treated as a pass, even if no secret
-indicator is reported. Failed and incomplete reports contain no hashes. A partial report is
-not a complete inventory or a guarantee about the uninspected bytes.
+Only a scan with exit 0 and a schema-2 JSON report whose status is `pass` is an
+accepting result. Verify the identity fields below. Help never exits 0, and
+abbreviated options such as `--he` are rejected. Usage errors return 2.
 
-Use a fixed, trusted option list in automation, request JSON, and put `--` before
-the archive argument so a name beginning with `-` cannot become an option. Do
-not forward archive-controlled extra arguments. Check both the exit code and
-JSON scan status; do not infer success from a report file, a human PASS line, or
-exit `0` alone. Usage errors produce exit `2`. A report from another invocation
-may already exist at a refused output path.
+Do not infer success from a human PASS line, the presence of an output file, or
+a report from another invocation. Reject every nonzero exit, including a link
+operation whose outcome is uncertain. Unsupported, corrupt, encrypted, or
+over-budget input is never an accepting result.
 
-### Report schema 2 and archive identity
+Schema 2 uses opaque member IDs, fixed finding categories, aggregate
+`members_seen` and `bytes_scanned`, and these identity fields:
 
-A passing JSON report includes `archive_sha256`, `archive_bytes`, and `hashes`
-(member ID, SHA-256, and expanded-byte count). The archive digest covers every
-compressed artifact byte, including names, modes, and comments. Compare it to
-the exact artifact you will distribute. It provides byte identity, not publisher
-authentication, and cannot stop later replacement. Keep the input stable while
-checking; change detection is best effort rather than an immutable snapshot.
+- On pass: `archive_sha256`, `archive_bytes`, and regular-member `hashes`
+- On fail/incomplete: archive identity fields are null and `hashes` is empty
 
-For every `fail` or `incomplete` result, including a later input-change or report-
-publication error, `archive_sha256` and `archive_bytes` are `null` and `hashes` is
-empty. This is an intentional change from report schema 1. Hashes are still
-computed internally for manifest comparison, but are not published for rejected
-inputs. Schema 2 is not backward-compatible with consumers expecting hashes in
-failed reports.
+All content hashes are cleared on any failure, including a later publication
+error. Member names, local paths, matching secret text, and exception messages
+are not printed. Counts and aggregate scanned-byte totals still disclose
+information on failed checks. Schema 2 intentionally differs from the earlier
+prototype's schema 1, which exposed hashes on failed/partial results.
 
-PASS-only hashing reduces known-secret fingerprint disclosure. It does not make
-passing reports nonsensitive: undetected secrets may remain, and a digest can
-confirm guesses about candidate bytes. Review any report before sharing it.
+Passing reports can still identify secret-bearing bytes that these narrow
+indicators missed. A digest allows candidate guessing. Review all reports before
+sharing; PASS-only hash disclosure is not a confidentiality guarantee.
 
-## Supported ZIP scope
+## One immutable captured archive
 
-The prototype intentionally accepts a narrow subset: single-disk ZIP32 archives
-with stored or deflated members, FAT/Unix creator metadata, and no extra fields.
-Names must be ASCII unless the ZIP UTF-8 flag is set; legacy non-ASCII names are
-unsupported because readers may decode them differently. ZIP64, split/multidisk
-archives, encryption, data descriptors, unsupported compression, unfamiliar
-flags, unknown creator hosts, and every nonempty extra-field block are rejected as incomplete. Some valid ZIPs
-produced by other tools are therefore outside scope.
+The checker reads a bounded immutable byte copy into memory, then closes the
+input. Structure parsing, decompression, member hashes, and the archive digest
+all use this same copy. The digest covers every captured compressed byte,
+including names and accepted metadata; it does not come from a second read of
+the potentially changing file.
 
-Do not automatically repackage rejected files just to obtain a pass: review why
-they were rejected and preserve the identity of the actual artifact being
-released. The checker does not recurse into archive files stored as members.
-Their raw bytes may be hashed on a passing scan, but their contained files are
-not inspected. ZIP signature bytes inside a member are ordinary data. This
-parser chooses the final EOCD signature and requires contiguous local records,
-central records, and the final comment length to account for the archive.
-Appended second EOCD records are rejected. It does not prove that every other
-ZIP reader chooses the same view of crafted metadata or nested content.
+Before/after size/time checks during capture reject detected changes. Capture
+is not an atomic filesystem snapshot or a lock: a writer could change the source
+while it is being read, or immediately afterward. Whatever bytes were captured
+are the bytes parsed and hashed. Later changes to the original path do not
+change the captured result and are not monitored. Before distribution, compare
+the reported archive hash with the exact bytes being distributed.
 
-## Indicator and resource limits
-
-The indicators look for a narrow selection of ASCII private-key headers,
-AWS-style access-key identifiers, GitHub-style tokens, obvious secret
-assignments, and Unix/Windows home-path strings. These byte-pattern checks apply
-to member contents, decoded names, and archive/member comments. They do not verify credentials
-or determine whether a match is live. Test data may trigger them. Encoded,
-obfuscated, unfamiliar, and application-specific secrets may go undetected.
-A pass is not a privacy review.
-
-Byte, count, ratio, and elapsed-time limits reduce exposure to some hostile
-archives. Time checks are cooperative; the process is not an OS-enforced
-sandbox, memory quota, CPU quota, or guaranteed wall-clock deadline. Parsing
-and decompression can consume resources before the next check. For hostile
-inputs, run with low privileges and external process or container limits.
-Do not increase limits blindly after an incomplete result.
-
-Reports use member IDs instead of paths and omit matched content. Hashes,
-sizes, counts, and finding categories can still disclose information. Treat
-reports and external manifests as potentially sensitive. See
-[PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and the detailed
-[threat model](THREAT_MODEL.md).
-
-### Fixed and configurable bounds
+This consistency choice deliberately spends memory and limits archive size:
 
 | Limit | Default | Hard maximum |
 | --- | --- | --- |
-| Compressed archive | 64 MiB | 256 MiB |
+| Compressed captured archive | 16 MiB | 32 MiB |
 | Members | 1,000 | 10,000 |
 | Expanded bytes per member | 8 MiB | 64 MiB |
-| Expanded bytes across archive | 64 MiB | 256 MiB |
+| Expanded bytes total | 64 MiB | 256 MiB |
 | Expanded/compressed ratio per member | 100 | 1,000 |
 | Cooperative elapsed seconds | 10 | 60 |
 
-All values must be positive; byte and count limits must be integers. The ratio
-uses compressed member bytes with a denominator of at least one. A stream may
-produce at most one byte beyond a declared size, configured byte budget, or ratio budget to establish
-that it exceeds that budget, then inspection stops. Stream output is processed
-in chunks no larger than 64 KiB. Limits are not an OS memory guarantee.
+The compressed archive copy, metadata, reports, and transient buffers consume
+memory; a 32 MiB archive limit is not a 32 MiB process-memory quota. No default
+disk snapshot is created. Capture requests at most the initial file size plus
+one byte, after checking that size against the configured bound. Detected growth
+or inconsistent capture fails closed. Expanded data is streamed in chunks up
+to 64 KiB, with at most one byte past a declared size, byte budget, or ratio
+budget to establish rejection. The ratio denominator is at least one byte.
 
-Fixed bounds include an 8 MiB central directory, 1,024-byte member names, a
-64 KiB external policy, a 2 MiB external manifest, and at most 128 patterns per
-pattern group, with at most 512 characters per pattern. Unknown configuration
-keys, duplicate JSON keys, non-finite values, and invalid limits are rejected.
+Fixed bounds include an 8 MiB central directory, 1,024-byte names, a 64 KiB policy,
+a 2 MiB manifest, and at most 128 patterns per group of at most 512 ASCII
+characters each. Unknown configuration keys, duplicate JSON keys, non-finite
+values, invalid types, and excessive limits are rejected.
 
-ZIP member names must use relative slash-separated paths. Controls, backslashes,
-colons, empty/dot/dot-dot components, Windows-invalid characters and reserved
-names, trailing dots/spaces, NFC/case-fold/uppercase collisions, and file/directory prefix
-conflicts are rejected. This is a deliberately conservative policy, not a
-complete model of every filesystem. Policies match original decoded names;
-normalization is used for collision checks rather than silently renaming files.
-Uppercase folding deliberately catches additional names such as dotless `ı`
-versus `I`. The reserved-name policy includes `COM0` through `COM9` and `LPT0`
-through `LPT9`; the zero forms are conservative exclusions, not a claim that
-Microsoft reserves them. Set-ID, sticky, and world-writable Unix mode bits are
-also forbidden by this profile. No extraction behavior on NTFS, APFS, or another
-filesystem is asserted by these conservative checks.
+Elapsed-time checks cover capture, parsing, decompression, and archive hashing.
+They are cooperative, cannot interrupt an ongoing I/O/library call, and are not
+an OS CPU, memory, or wall-clock guarantee. Trusted configuration loading and
+report output are outside the scan deadline. Use a maintained runtime and
+external process limits for hostile inputs. Do not raise limits blindly.
 
-## Tests
+## Requested report files
+
+File publication requires POSIX directory-relative operations, no-follow
+parent-directory opens, and same-directory hard links. Unsupported platforms
+or filesystems return incomplete; stdout-only scans remain available. There
+is no non-atomic overwrite fallback.
+
+Use a trusted local filesystem and a directory whose writers you trust. The
+report path must have no empty, `.` or `..` components and no symlink parent
+components. A relative name such as `new-report.json` is supported. Parent
+walking, private staging, final link, and cleanup use the same opened directory
+anchor; different lexical and symlink resolutions are not mixed.
+
+The staging file is mode 0600. The entire report is written, checked for short
+writes, flushed, fsynced, and closed before the final no-clobber link. Existing
+entries, including dangling symlinks, are not overwritten. A write/flush/sync/
+close failure before linking publishes no new final file.
+
+A link call can have an uncertain outcome, particularly on a network filesystem:
+a complete final report may exist even when stdout says incomplete and exit is 2.
+The tool does not delete that target or claim rollback. Check the exit code and
+current JSON result, never the final file alone. No general power-loss durability
+or network-filesystem transaction guarantee is offered.
+
+Cleanup is best effort. Interruption or cleanup failure can leave a hidden
+`.release-bundle-guard-*.tmp` containing a full passing report and its hashes,
+even after failed publication. Keep report directories outside release staging
+and review leftovers after interrupted runs. See [PRIVACY.md](PRIVACY.md),
+[SECURITY.md](SECURITY.md), and [THREAT_MODEL.md](THREAT_MODEL.md).
+
+## Indicator limits
+
+The scanner looks for a small selection of ASCII private-key headers, AWS-style
+access-key identifiers, GitHub-style tokens, obvious secret assignments, and
+Unix/Windows home-path strings in member contents and names. It does not verify
+credentials or determine whether a match is live. Synthetic strings may trigger
+it. Encoding, obfuscation, novel formats, and nested archives can evade it.
+A pass is not a privacy, legal, licensing, or general release-content review.
+
+## Tests and license
 
 ```sh
 python -B -m unittest discover -s tests -v
 ```
 
-Tests create small synthetic temporary fixtures inside the project's `tests`
-directory and clean them up. No private artifact, real credential, extraction,
-network service, or dependency install is needed.
-
-## Development and license
-
-The prototype is designed for synthetic fixtures and local verification before
-any use as a release gate. A passing test suite is not evidence of production
-adoption, comprehensive coverage, or the absence of vulnerabilities.
+Tests use small synthetic temporary fixtures inside `tests` and clean them up.
+They require no real artifacts, credentials, network service, or dependency
+install. They do not establish real extractor behavior, production adoption,
+comprehensive coverage, or the absence of vulnerabilities.
 
 A license has not been selected for this prototype. No copyright identity,
-maintenance commitment, or security-reporting endpoint is established by this
-repository.
+maintenance commitment, or security-reporting endpoint is established here.

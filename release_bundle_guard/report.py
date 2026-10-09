@@ -17,7 +17,7 @@ MESSAGES = {
     "corrupt_zip": "ZIP structure, stream, size, or CRC verification failed.",
     "input_changed": "The archive changed during the scan.",
     "unsafe_name": "A member name violates the portable relative-path rules.",
-    "name_collision": "Member names collide exactly, after NFC normalization, or after case folding.",
+    "name_collision": "Member names collide exactly or without ASCII case, or file/directory paths conflict.",
     "unsafe_permissions": "A member has set-ID, sticky, or world-writable mode bits forbidden by this profile.",
     "special_file": "A member is a symlink, special file, or has inconsistent type metadata.",
     "not_allowed": "A member does not match the allowlist.",
@@ -27,7 +27,7 @@ MESSAGES = {
     "private_path_indicator": "A private home-path text indicator was detected; matched text is withheld.",
     "manifest_mismatch": "A file hash or file set differs from the external trusted manifest.",
     "scan_error": "An unexpected scanner error prevented a complete result.",
-    "report_error": "The requested report could not be created without overwriting an existing file.",
+    "report_error": "Complete publication of the requested new report could not be confirmed.",
 }
 
 @dataclass

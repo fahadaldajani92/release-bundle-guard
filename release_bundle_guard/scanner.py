@@ -55,12 +55,14 @@ class Member:
                 and not self.external & 0xFFD8)
 
 class Scanner:
-    def __init__(self, stream, policy, manifest, report, clock):
-        self.stream, self.policy, self.manifest = stream, policy, manifest
+    def __init__(self, data, policy, manifest, report, clock, *, start=None):
+        if type(data) is not bytes:
+            raise TypeError("immutable bytes required")
+        self.data, self.policy, self.manifest = data, policy, manifest
         self.report, self.clock = report, clock
-        self.start = clock()
+        self.start = clock() if start is None else start
         self.deadline = self.start + policy.limits["max_seconds"]
-        self.size = os.fstat(stream.fileno()).st_size
+        self.size = len(data)
 
     def tick(self):
         if self.clock() >= self.deadline:
@@ -70,8 +72,7 @@ class Scanner:
         self.tick()
         if offset < 0 or count < 0 or offset + count > self.size:
             raise StopScan("corrupt_zip")
-        self.stream.seek(offset)
-        data = self.stream.read(count)
+        data = self.data[offset:offset + count]
         self.tick()
         if len(data) != count:
             raise StopScan("corrupt_zip")
@@ -108,13 +109,14 @@ class Scanner:
         end_offset = self.size - tail_size + index
         if index + EOCD.size + comment_size != len(tail):
             raise StopScan("corrupt_zip")
+        if comment_size:
+            raise StopScan("unsupported_zip")
         if disk or cd_disk or on_disk != count or count == 0xFFFF or cd_size == 0xFFFFFFFF or cd_start == 0xFFFFFFFF:
             raise StopScan("unsupported_zip")
         if count > limits["max_members"]:
             raise StopScan("member_count_limit")
         if cd_size > MAX_CENTRAL_BYTES:
             raise StopScan("metadata_limit")
-        self.indicators(tail[index + EOCD.size:], None)
         if cd_start + cd_size != end_offset:
             raise StopScan("corrupt_zip")
         # Even an empty ZIP must have no unparsed prefix or payload.
@@ -131,6 +133,8 @@ class Scanner:
              internal, external, offset) = values
             ident = f"member-{number + 1:04d}"
             self.report.member_count += 1
+            if comment_size:
+                raise StopScan("unsupported_zip", ident)
             if signature != b"PK\x01\x02":
                 raise StopScan("corrupt_zip", ident)
             if flags & 1:
@@ -147,15 +151,14 @@ class Scanner:
             if next_position > end_offset:
                 raise StopScan("corrupt_zip", ident)
             raw_name = self.read(position + CENTRAL.size, name_size)
-            if not flags & 0x800 and not raw_name.isascii():
-                # Legacy encodings can be interpreted differently by readers.
+            if not raw_name.isascii():
+                # The strict profile supports ASCII only, regardless of flags.
                 raise StopScan("unsupported_zip", ident)
             try:
-                name = raw_name.decode("utf-8" if flags & 0x800 else "ascii")
+                name = raw_name.decode("ascii")
             except UnicodeError:
                 raise StopScan("corrupt_zip", ident) from None
             self.extras(self.read(position + CENTRAL.size + name_size, extra_size))
-            self.indicators(self.read(position + CENTRAL.size + name_size + extra_size, comment_size), ident)
             if size > limits["max_member_bytes"]:
                 raise StopScan("member_size_limit", ident)
             total_declared += size
@@ -219,7 +222,7 @@ class Scanner:
                 raise StopScan("corrupt_zip", ident)
             if not any(fnmatch.fnmatchcase(name, pattern) for pattern in self.policy.allow):
                 self.report.add("not_allowed", ident)
-            if any(fnmatch.fnmatchcase(name, pattern) for pattern in self.policy.forbidden):
+            if any(fnmatch.fnmatchcase(name.lower(), pattern.lower()) for pattern in self.policy.forbidden):
                 self.report.add("forbidden", ident)
             self.indicators(name.encode("utf-8"), ident)
         for member in members:
@@ -338,15 +341,30 @@ def scan_archive(path, policy, manifest=None, *, clock=time.monotonic):
                                    "limits": policy.limits})
         if manifest is not None:
             manifest = manifest_from_dict({"version": 1, "sha256": manifest})
+        # Capture one immutable bounded byte string. Parsing, decompression and
+        # the artifact digest use only this copy, never another filesystem read.
+        start = clock()
+        deadline = start + policy.limits["max_seconds"]
         with open_regular(path) as stream:
             before = os.fstat(stream.fileno())
-            scanner = Scanner(stream, policy, manifest, report, clock)
-            scanner.run()
-            if report.status == "pass":
-                scanner.bind_archive()
+            if before.st_size > policy.limits["max_archive_bytes"]:
+                raise StopScan("archive_size_limit")
+            if clock() >= deadline:
+                raise StopScan("time_limit")
+            data = stream.read(before.st_size + 1)
             after = os.fstat(stream.fileno())
-            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                report.add("input_changed", incomplete=True)
+            if clock() >= deadline:
+                raise StopScan("time_limit")
+            if len(data) > policy.limits["max_archive_bytes"]:
+                raise StopScan("archive_size_limit")
+            if len(data) != before.st_size or (
+                    before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise StopScan("input_changed")
+        scanner = Scanner(data, policy, manifest, report, clock, start=start)
+        scanner.run()
+        if report.status == "pass":
+            scanner.bind_archive()
     except StopScan as exc:
         report.add(exc.code, exc.member, incomplete=True)
     except ConfigurationError:

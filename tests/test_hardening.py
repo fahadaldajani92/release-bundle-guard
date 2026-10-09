@@ -53,9 +53,9 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(report.status, "incomplete")
         self.assertIn("unsupported_zip", {item["code"] for item in report.findings})
 
-    def test_explicit_utf8_name_still_supported(self):
+    def test_explicit_utf8_nonascii_name_is_unsupported(self):
         self.write_raw_name("caf\u00e9.txt".encode(), flags=0x800)
-        self.assertEqual(scan_archive(self.archive, self.policy).status, "pass")
+        self.assertEqual(scan_archive(self.archive, self.policy).status, "incomplete")
 
     def test_pass_binds_whole_archive(self):
         self.write_zip([("a.txt", b"synthetic fixture")])
@@ -104,11 +104,11 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("INCOMPLETE", output.getvalue())
         self.assertFalse(destination.exists())
 
-    def test_dotless_i_is_conservatively_collision_checked(self):
+    def test_dotless_i_is_outside_ascii_profile(self):
         self.write_zip([("f\u0131le.txt", b"first"), ("FILE.txt", b"second")])
         report = scan_archive(self.archive, self.policy)
-        self.assertEqual(report.status, "fail")
-        self.assertIn("name_collision", {item["code"] for item in report.findings})
+        self.assertEqual(report.status, "incomplete")
+        self.assertIn("unsupported_zip", {item["code"] for item in report.findings})
 
     def test_com_zero_and_lpt_zero_are_conservatively_reserved(self):
         for name in ("COM0", "LPT0.txt"):
@@ -164,8 +164,10 @@ class HardeningTests(unittest.TestCase):
     def test_archive_digest_covers_metadata(self):
         self.write_zip([("a.txt", b"synthetic fixture")])
         first = scan_archive(self.archive, self.policy)
-        with zipfile.ZipFile(self.archive, "a") as target:
-            target.comment = b"benign synthetic comment"
+        data = bytearray(self.archive.read_bytes())
+        central = data.index(b"PK\x01\x02")
+        struct.pack_into("<I", data, central + 38, (stat.S_IFREG | 0o644) << 16)
+        self.archive.write_bytes(data)
         second = scan_archive(self.archive, self.policy)
         self.assertEqual(first.hashes, second.hashes)
         self.assertNotEqual(first.archive_sha256, second.archive_sha256)
@@ -183,7 +185,7 @@ class HardeningTests(unittest.TestCase):
         self.assertIsNone(report.archive_bytes)
         self.assertNotIn("SHA256", report.render())
 
-    def test_input_change_after_archive_hash_clears_all_hashes(self):
+    def test_disk_metadata_change_after_capture_preserves_snapshot_result(self):
         self.write_zip([("a.txt", b"synthetic fixture")])
         original = Scanner.bind_archive
         def change_after_binding(scanner):
@@ -192,10 +194,9 @@ class HardeningTests(unittest.TestCase):
             os.utime(self.archive, ns=(old.st_atime_ns, old.st_mtime_ns + 1000000000))
         with mock.patch.object(Scanner, "bind_archive", change_after_binding):
             report = scan_archive(self.archive, self.policy)
-        self.assertEqual(report.status, "incomplete")
-        self.assertIn("input_changed", {item["code"] for item in report.findings})
-        self.assertEqual(report.hashes, [])
-        self.assertIsNone(report.archive_sha256)
+        self.assertEqual(report.status, "pass")
+        self.assertTrue(report.hashes)
+        self.assertEqual(report.archive_sha256, hashlib.sha256(self.archive.read_bytes()).hexdigest())
 
     def test_report_symlinks_are_not_followed(self):
         if not hasattr(os, "symlink"):
@@ -239,18 +240,18 @@ class HardeningTests(unittest.TestCase):
         self.write_zip([("nested.bin", b"payload PK\x05\x06 PK\x01\x02 payload")])
         self.assertEqual(scan_archive(self.archive, self.policy).status, "pass")
 
-    def test_help_is_non_scan_success(self):
+    def test_help_is_distinct_non_scan_exit(self):
         with mock.patch.object(cli, "scan_archive") as scan, contextlib.redirect_stdout(io.StringIO()) as output:
             with self.assertRaises(SystemExit) as result:
                 cli.main(["--help"])
-        self.assertEqual(result.exception.code, 0)
+        self.assertEqual(result.exception.code, 3)
         scan.assert_not_called()
         self.assertNotIn("Release bundle check: PASS", output.getvalue())
 
-    def test_case_sensitive_patterns_are_explicit(self):
+    def test_forbidden_patterns_are_case_insensitive(self):
         self.write_zip([("UPPER.TXT", b"synthetic fixture")])
         policy = Policy.from_dict({"version": 1, "allow": ["*"], "forbidden": ["*.txt"]})
-        self.assertEqual(scan_archive(self.archive, policy).status, "pass")
+        self.assertEqual(scan_archive(self.archive, policy).status, "fail")
 
     def test_appended_second_eocd_is_rejected(self):
         self.write_zip([("a.txt", b"synthetic fixture")])
