@@ -21,7 +21,9 @@ No production adoption, security certification, or comprehensive audit is claime
   special files, inconsistent types, set-ID/sticky/world-writable mode bits,
   or unsupported DOS attributes
 - Conservative reserved-name exclusions, including COM0–COM9 and LPT0–LPT9;
-  the zero forms are this tool's policy, not a Microsoft naming claim
+  the zero forms are this tool's policy, not a Microsoft naming claim. ASCII spaces
+  at the end of a basename before its first dot are trimmed for this reservation
+  check, so `CON .txt` and `NUL .tar.gz` are also rejected
 
 Non-ASCII names are outside scope rather than normalized or interpreted using
 an assumed code page. This excludes ordinary international filenames as well
@@ -85,7 +87,9 @@ never configures this checker.
 optional. Patterns are ASCII Python `fnmatchcase` globs, not regular expressions:
 
 - `allow` and `required` are case-sensitive
-- `forbidden` is ASCII case-insensitive, by comparing lowercase names/patterns
+- `forbidden` denies either an original `fnmatchcase` match or a match after
+  lowercasing ASCII names/patterns. Keeping the original comparison preserves
+  character-class ranges such as `[A-z]`, which include `_`
 - `*` spans `/`; `assets/*.txt` can match nested paths
 - Required patterns need regular files, not directory placeholders
 
@@ -182,6 +186,13 @@ This consistency choice deliberately spends memory and limits archive size:
 | Expanded bytes total | 64 MiB | 256 MiB |
 | Expanded/compressed ratio per member | 100 | 1,000 |
 | Cooperative elapsed seconds | 10 | 60 |
+
+Migration from earlier prototypes: the compressed default decreased from
+64 MiB to 16 MiB, and the hard maximum from 256 MiB to 32 MiB. An old policy
+containing `"max_archive_bytes": 67108864` (64 MiB) now fails configuration
+validation with `incomplete`/exit 2 before scanning. Review the artifact and
+policy before selecting a value at or below 33554432 (32 MiB); there is no
+above-cap override or automatic disk-snapshot fallback.
 
 The compressed archive copy, metadata, reports, and transient buffers consume
 memory; a 32 MiB archive limit is not a 32 MiB process-memory quota. No default

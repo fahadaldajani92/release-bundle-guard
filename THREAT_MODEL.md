@@ -32,8 +32,9 @@ archive inspection, signature download, upload, or application network lookup.
 
 ## Unwanted files and policy mistakes
 
-Allow and required globs are case-sensitive; forbidden globs are ASCII
-case-insensitive. `*` spans path separators. These deliberate semantics must
+Allow and required globs are case-sensitive. Forbidden globs deny an original
+match or an ASCII-lowercased match, preserving original range semantics as well
+as case-insensitive coverage. `*` spans path separators. These deliberate semantics must
 be reviewed with the release layout. A broad allowlist plus a few denied suffixes
 is not comprehensive content approval. Required patterns need regular files.
 
@@ -53,7 +54,9 @@ Names must be portable relative slash-separated paths under the documented
 conservative rules. Duplicate/case-insensitive conflicts, file/directory-prefix
 conflicts, symlinks, special files, unsupported DOS metadata, and set-ID/sticky/
 world-writable mode bits cannot pass. COM0/LPT0 are conservative policy
-exclusions rather than asserted operating-system reserved names.
+exclusions rather than asserted operating-system reserved names. ASCII trailing
+spaces in the basename before its first dot are ignored for this reservation
+check, as a conservative policy rather than a tested extractor exploit.
 
 Every archive/member comment and nonempty extra field is unsupported. This
 also excludes earlier EOCD records hidden in comments. Contiguous local and

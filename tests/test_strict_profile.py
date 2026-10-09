@@ -166,6 +166,33 @@ class StrictProfileTests(unittest.TestCase):
                 self.assertEqual(cli.main(["--policy", str(policy), "--", "--help"]), 0)
             self.assertEqual(scan.call_args.args[0], "--help")
 
+    def test_reserved_basename_spaces_before_extension_rejected(self):
+        for name in ("CON .txt", "NUL .tar.gz", "assets/COM1  .txt"):
+            self.write_zip(name)
+            report = scan_archive(self.archive, self.policy)
+            self.assertEqual(report.status, "fail")
+            self.assertIn("unsafe_name", {item["code"] for item in report.findings})
+        self.write_zip("ordinary .txt")
+        self.assertEqual(scan_archive(self.archive, self.policy).status, "pass")
+
+    def test_forbidden_lowercase_preserves_original_ascii_ranges(self):
+        self.write_zip("assets/_.txt")
+        policy = Policy.from_dict({"version": 1, "allow": ["assets/*"],
+                                  "forbidden": ["assets/[A-z].txt"]})
+        report = scan_archive(self.archive, policy)
+        self.assertEqual(report.status, "fail")
+        self.assertIn("forbidden", {item["code"] for item in report.findings})
+
+    def test_old_64_mib_archive_policy_fails_closed(self):
+        self.write_zip()
+        policy = self.root / "old-policy.json"
+        policy.write_text('{"version":1,"allow":["*"],"limits":{"max_archive_bytes":67108864}}')
+        with mock.patch.object(cli, "scan_archive") as scan, contextlib.redirect_stdout(io.StringIO()) as output:
+            code = cli.main(["--policy", str(policy), "--", str(self.archive)])
+        self.assertEqual(code, 2)
+        self.assertIn("configuration_error", output.getvalue())
+        scan.assert_not_called()
+
     def test_symlink_report_parent_is_rejected(self):
         real = self.root / "real"
         real.mkdir()

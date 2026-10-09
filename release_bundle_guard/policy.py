@@ -69,7 +69,7 @@ def valid_name(name):
         return False
     reserved = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(f"COM{i}" for i in range(0, 10)),
                 *(f"LPT{i}" for i in range(0, 10))}
-    return not any(part.split(".")[0].upper() in reserved for part in parts)
+    return not any(part.split(".")[0].rstrip(" ").upper() in reserved for part in parts)
 
 def name_key(name):
     # Names accepted by this profile are ASCII; no Unicode database is used.

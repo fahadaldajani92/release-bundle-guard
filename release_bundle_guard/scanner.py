@@ -222,7 +222,9 @@ class Scanner:
                 raise StopScan("corrupt_zip", ident)
             if not any(fnmatch.fnmatchcase(name, pattern) for pattern in self.policy.allow):
                 self.report.add("not_allowed", ident)
-            if any(fnmatch.fnmatchcase(name.lower(), pattern.lower()) for pattern in self.policy.forbidden):
+            if any(fnmatch.fnmatchcase(name, pattern)
+                   or fnmatch.fnmatchcase(name.lower(), pattern.lower())
+                   for pattern in self.policy.forbidden):
                 self.report.add("forbidden", ident)
             self.indicators(name.encode("utf-8"), ident)
         for member in members:
