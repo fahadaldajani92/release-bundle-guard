@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "allow": ["README.txt", "assets/", "assets/*"],
+  "required": ["README.txt"],
+  "forbidden": ["*.pem", "*.key", "*.env", "*/.git/*"],
+  "limits": {
+    "max_archive_bytes": 67108864,
+    "max_members": 1000,
+    "max_member_bytes": 8388608,
+    "max_total_bytes": 67108864,
+    "max_ratio": 100,
+    "max_seconds": 10
+  }
+}

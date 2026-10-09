@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "release-bundle-guard"
+version = "0.1.0"
+description = "Offline bounded policy checks for restricted release ZIPs"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+release-bundle-guard = "release_bundle_guard.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["release_bundle_guard*"]
